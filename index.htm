@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel='icon' type='image/ico' href='https://www.nhk.jp/favicon.ico'>
+    <title>番組表ビューア</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --header-bg: #222222;
+            --border-color: #333333;
+            --text-color: #ffffff;
+            --channel-width: 160px;
+            --time-width: 28px; 
+            --px-per-minute: 3px;
+            --top-bar-height: 50px;
+        }
+
+        body { margin: 0; font-family: 'Noto Sans', sans-serif; background: var(--bg-color); color: var(--text-color); overflow: hidden; }
+
+               /* THANH ĐIỀU CHỈNH TRÊN CÙNG */
+        .top-bar {
+            height: var(--top-bar-height); background: #111;
+            display: flex; align-items: center; padding: 0 10px; gap: 8px; /* Giảm gap và padding để thở trên mobile */
+            border-bottom: 1px solid var(--border-color); box-sizing: border-box;
+            overflow: hidden; /* Cấm không cho thanh top-bar sinh scrollbar làm lệch khung */
+        }
+        .top-bar select, .top-bar button {
+            background: #2a2a2a; color: white; border: 1px solid #444;
+            padding: 6px 8px; border-radius: 4px; font-size: 13px; cursor: pointer;
+            flex-shrink: 0; /* Tuyệt đối không cho nút bị bóp méo méo mó */
+        }
+        .top-bar select:hover, .top-bar button:hover { background: #333; }
+        
+        .date-nav { 
+            display: flex; align-items: center; background: #2a2a2a; border-radius: 4px; border: 1px solid #444; 
+            flex-shrink: 0; /* Giữ nguyên kích thước cụm ngày */
+        }
+        .date-nav button { border: none; background: transparent; padding: 6px 10px; color: white; cursor: pointer; }
+        .date-nav span { font-weight: bold; font-size: 13px; padding: 0 4px; white-space: nowrap; }
+
+        /* CỤM NHẬP URL ĐỘ DÃN ĐỘNG (RESPONSIVE) */
+        .url-input-group {
+            display: flex; align-items: center; gap: 6px; 
+            margin-left: auto; /* Đẩy về bên phải nếu màn hình to rộng */
+            flex: 1; 
+            min-width: 120px; /* Chiều rộng tối thiểu để không bị sập layout trên điện thoại */
+        }
+        .url-input-group input {
+            width: 100%; min-width: 0; /* trick CSS: cho phép input thu nhỏ nhỏ hơn kích thước mặc định của trình duyệt */
+            background: #1f1f1f; color: white; border: 1px solid #444;
+            padding: 6px 10px; border-radius: 4px; font-size: 13px; outline: none;
+            box-sizing: border-box;
+        }
+        .url-input-group input:focus { border-color: #007aff; }
+        .url-input-group button {
+            background: #007aff; border-color: #007aff; font-weight: bold; white-space: nowrap;
+            padding: 6px 12px;
+        }
+
+        /* GRID LAYOUT CHÍNH */
+        .epg-layout {
+            display: grid; grid-template-columns: var(--time-width) 1fr; grid-template-rows: 50px 1fr;
+            height: calc(100vh - var(--top-bar-height)); width: 100vw;
+        }
+        .epg-corner {
+            grid-column: 1; grid-row: 1; background: #111; border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); z-index: 30;
+        }
+
+        /* HEADER KÊNH */
+        .epg-header-channels {
+            grid-column: 2; grid-row: 1; display: flex; background: var(--header-bg); overflow: hidden; z-index: 20; border-bottom: 1px solid var(--border-color);
+        }
+        .channel-cell {
+            width: var(--channel-width); min-width: var(--channel-width); max-width: var(--channel-width);
+            box-sizing: border-box; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+            border-right: 1px solid var(--border-color); padding: 0 5px; overflow: hidden;
+        }
+        .ch-number { font-size: 14px; font-weight: bold; color: #888888; }
+        .ch-logo { max-height: 28px; max-width: 90px; object-fit: contain; background: transparent; filter: drop-shadow(0px 0px 2px rgba(255,255,255,0.4)); }
+
+        /* CỘT GIỜ */
+        .epg-sidebar-time {
+            grid-column: 1; grid-row: 2; background: var(--header-bg); overflow: hidden; z-index: 10; border-right: 1px solid var(--border-color);
+        }
+        .time-cell {
+            height: calc(60 * var(--px-per-minute));
+            display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+            padding-top: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); box-sizing: border-box;
+            color: #ffffff; text-shadow: 0px 1px 3px rgba(0,0,0,0.8);
+            width: 100%; overflow: hidden;
+        }
+        .time-hour { font-size: 18px; font-weight: bold; line-height: 1; letter-spacing: -0.5px; }
+        .time-label { font-size: 10px; margin-top: 2px; font-weight: bold; opacity: 0.9; transform: scale(0.85); }
+
+        /* LƯỚI CHÍNH */
+        .epg-main-grid {
+            grid-column: 2; grid-row: 2; overflow: auto; position: relative; will-change: transform;
+        }
+        .programs-wrapper {
+            display: flex; position: relative; width: max-content; overflow-y: hidden;
+        }
+        .channel-column {
+            width: var(--channel-width); min-width: var(--channel-width); max-width: var(--channel-width);
+            box-sizing: border-box; flex-shrink: 0; position: relative; border-right: 1px solid var(--border-color);
+        }
+
+        /* THÀNH PHẦN HIỂN THỊ KHI CHƯA CÓ LỊCH PHÁT SÓNG */
+        .epg-placeholder {
+            position: absolute; left: 20px; top: 20px; color: #666; font-size: 14px; font-style: italic; pointer-events: none;
+        }
+
+        /* THÈ CHƯƠNG TRÌNH */
+        .program-card {
+            position: absolute; left: 0; right: 0; padding: 5px; box-sizing: border-box;
+            border-bottom: 1px solid rgba(0,0,0,0.3); overflow: hidden; cursor: pointer; margin: 1px; border-radius: 3px;
+        }
+        .program-card:hover { filter: brightness(1.15); z-index: 5; }
+        .prog-min { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+        .prog-title { font-size: 13px; font-weight: bold; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .prog-desc { font-size: 11px; color: #aaaaaa; margin-top: 3px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+        .prog-image { width: 100%; margin-top: 6px; border-radius: 4px; object-fit: cover; max-height: 80px; background: #222; }                        
+        .now-line {
+            position: absolute; left: 0; right: 0; height: 2px; background: #ff3b30; z-index: 25; pointer-events: none;
+        }
+        .now-line::before {
+            content: ''; position: absolute; left: -4px; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: #ff3b30;
+        }
+
+        .color-0 { background: #2c3e50; border-left: 3px solid #3498db; }
+        .color-1 { background: #342a3a; border-left: 3px solid #9b59b6; }
+        .color-2 { background: #223a31; border-left: 3px solid #2ecc71; }
+        .color-3 { background: #3f3320; border-left: 3px solid #f1c40f; }
+
+        /* ================= MODAL CSS ================= */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); z-index: 1000;
+            display: flex; justify-content: center; align-items: center;
+            opacity: 1; transition: opacity 0.2s;
+        }
+        .modal-content {
+            background: #252220; 
+            width: 90%; max-width: 600px; max-height: 85vh; border-radius: 8px;
+            padding: 24px; position: relative; overflow-y: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .modal-close {
+            position: absolute; top: 12px; right: 15px; font-size: 28px;
+            background: none; border: none; color: #888; cursor: pointer; line-height: 1;
+        }
+        .modal-close:hover { color: #fff; }
+        .modal-title { font-size: 22px; font-weight: bold; margin: 0 0 20px 0; line-height: 1.4; padding-right: 20px; }
+        .modal-ch-info { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; }
+        .modal-ch-logo { max-height: 45px; max-width: 100px; object-fit: contain; background: transparent; filter: drop-shadow(0px 0px 2px rgba(255,255,255,0.4)); }
+        .modal-ch-text { font-size: 14px; color: #e0e0e0; line-height: 1.6; }
+        .modal-ch-name { font-weight: bold; font-size: 15px; }
+        .modal-section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .modal-desc { font-size: 15px; line-height: 1.6; color: #cccccc; white-space: pre-wrap; }
+        .modal-image { width: 100%; border-radius: 8px; margin-top: 15px; object-fit: cover; }
+          /* Tối ưu hóa giao diện khi xem trên màn hình dọc của điện thoại */
+        @media (max-width: 600px) {
+            .top-bar { gap: 4px; padding: 0 5px; }
+            .date-nav span { font-size: 11px; }
+            .top-bar select { font-size: 11px; max-width: 80px; }
+            .url-input-group { max-width: 180px; } /* Khống chế không cho chiếm hết chỗ */
+            .url-input-group button { padding: 6px 8px; font-size: 11px; }
+        }
+        
+  </style>
+</head>
+<body>
+    <div id="app">
+        <div class="top-bar">
+            <div class="date-nav">
+                <button @click="changeDay(-1)">‹</button>
+                <span>{{ formattedDate }}</span>
+                <button @click="changeDay(1)">›</button>
+            </div>
+            <select @change="jumpToHour($event.target.value)">
+                <option disabled selected>時刻変更...</option>
+                <option v-for="h in 24" :value="h-1">{{ h-1 }} 時</option>
+            </select>
+            <button @click="jumpToNow()" title="Cuộn tới hiện tại">⏱️</button>
+
+            <div class="url-input-group">
+                <input v-model="xmltvUrl" type="text" placeholder="XMLTVファイルのURLを入力してください...">
+                <button @click="loadEPG" :disabled="isLoading">
+                    {{ isLoading ? '処理中...' : '処理' }}
+                </button>
+            </div>
+        </div>
+
+        <div class="epg-layout">
+            <div class="epg-corner"></div>
+
+            <div class="epg-header-channels" ref="headerRef">
+                <div v-for="(ch, index) in displayChannels" :key="ch.id" class="channel-cell">
+                    <template v-if="ch.icon">
+                        <span class="ch-number">{{ index + 1 }}</span>
+                        <img :src="ch.icon" :alt="ch.name" class="ch-logo" @error="ch.icon = ''" />
+                    </template>
+                    <template v-else>
+                        <span class="ch-number">{{ index + 1 }}.</span>
+                        <span style="font-size: 13px; font-weight: bold; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin-left: 4px;">{{ ch.name }}</span>
+                    </template>
+                </div>
+            </div>
+
+            <div class="epg-sidebar-time" ref="sidebarRef">
+                <div
+                    v-for="h in 24"
+                    :key="h"
+                    class="time-cell"
+                    :style="{ backgroundColor: colorTable[h - 1] }"
+                >
+                    <span class="time-hour">{{ h - 1 }}</span>
+                    <span class="time-label">時</span>
+                </div>
+            </div>
+
+            <div class="epg-main-grid" ref="mainGridRef" @scroll="onMasterScroll">
+                <div class="programs-wrapper" :style="{ height: totalHeight + 'px' }">
+                    <div v-if="allChannelsData.length === 0 && !isLoading" class="epg-placeholder">
+                        ← Nhập URL hệ thống XMLTV ở thanh công cụ phía trên và bấm "LÀM ĐẦY" để đổ dữ liệu lịch phát sóng...
+                    </div>
+
+                    <div v-if="isToday && allChannelsData.length > 0" class="now-line" :style="{ top: currentLineTop + 'px' }"></div>
+
+                    <div v-for="(ch, index) in displayChannels" :key="ch.id" class="channel-column">
+                        <div
+                            v-for="prog in ch.programs"
+                            :key="prog.start"
+                            class="program-card"
+                            :class="getColorClass(prog.title)"
+                            :style="getProgramStyle(prog)"
+                            :title="prog.title"
+                            @click="openModal(prog, ch, index)"
+                        >
+                            <div class="prog-min">{{ getMinute(prog.start) }}</div>
+                            <div class="prog-title">{{ prog.title }}</div>
+                            <div v-if="prog.desc" class="prog-desc">{{ prog.desc }}</div>
+
+                            <img v-if="prog.image" :src="prog.image" class="prog-image" @error="prog.image = ''" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="isModalOpen" class="modal-overlay" @click.self="closeModal">
+            <div class="modal-content">
+                <button class="modal-close" @click="closeModal">×</button>
+                <h2 class="modal-title">{{ selectedProgram.title }}</h2>
+                <div class="modal-ch-info">
+                    <img v-if="selectedChannel.icon" :src="selectedChannel.icon" class="modal-ch-logo" @error="selectedChannel.icon = ''">
+                    <div class="modal-ch-text">
+                        <div class="modal-ch-name">
+                            Ch: {{ selectedChannel.index + 1 }}
+                            <span v-if="!selectedChannel.icon">. {{ selectedChannel.name }}</span>
+                            <span v-else> {{ selectedChannel.name }}</span>
+                        </div>
+                        <div>{{ formatModalTime(selectedProgram.start, selectedProgram.stop) }}</div>
+                    </div>
+                </div>
+                <div class="modal-section-title">内容</div>
+                <div class="modal-desc">{{ selectedProgram.desc || 'この番組の説明はありません。.' }}</div>
+                <img v-if="selectedProgram.image" :src="selectedProgram.image" class="modal-image">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onUnmounted } = Vue;
+
+        createApp({
+            setup() {
+                // Đổi link mặc định tại đây nếu muốn mồi sẵn khi mở trang
+                const xmltvUrl = ref('');
+                const epgLoaded = ref(true); // Ép trạng thái luôn true để render khung EPG ngay lập tức
+                const isLoading = ref(false);
+                const allChannelsData = ref([]);
+
+                const headerRef = ref(null);
+                const sidebarRef = ref(null);
+                const mainGridRef = ref(null);
+
+                const currentDate = ref(new Date(new Date().setHours(0, 0, 0, 0)));
+                const PIXELS_PER_MINUTE = 3;
+                const totalHeight = 24 * 60 * PIXELS_PER_MINUTE;
+
+                const currentLineTop = ref(0);
+                let timeInterval = null;
+
+                const isModalOpen = ref(false);
+                const selectedProgram = ref(null);
+                const selectedChannel = ref(null);
+
+                const colorTable = [
+                  "#652ffc","#3e2df3","#2922d4","#2520c0","#98c32f","#b4c930","#d1cd35","#efcd34",
+                  "#ffcd3e","#ffc737","#ffae33","#fe9c30","#fe882f","#fe7a2c","#fe712c","#fd682a",
+                  "#fd5f25","#fd572b","#f44d3d","#e23e6e","#cf34a2","#b630d9","#9e2ffc","#842efc"
+                ];
+
+                const formattedDate = computed(() => {
+                    const d = currentDate.value;
+                    const today = new Date().setHours(0,0,0,0);
+                    const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+                    if (d.getTime() === today) return `今日, ${d.getDate()}/${d.getMonth() + 1}`;
+                    return `${dayNames[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}`;
+                });
+
+                const isToday = computed(() => {
+                    const today = new Date().setHours(0,0,0,0);
+                    return currentDate.value.getTime() === today;
+                });
+
+                const displayChannels = computed(() => {
+                    const startOfDay = currentDate.value.getTime();
+                    const endOfDay = startOfDay + (24 * 60 * 60 * 1000);
+                    return allChannelsData.value.map(ch => {
+                        return {
+                            ...ch,
+                            programs: ch.programs.filter(prog => {
+                                const pStart = new Date(prog.start).getTime();
+                                const pStop = new Date(prog.stop).getTime();
+                                return pStop > startOfDay && pStart < endOfDay;
+                            })
+                        };
+                    });
+                });
+
+                const updateCurrentTimeLine = () => {
+                    if (!isToday.value) return;
+                    const now = new Date();
+                    const diffMinutes = (now.getTime() - currentDate.value.getTime()) / (1000 * 60);
+                    currentLineTop.value = diffMinutes * PIXELS_PER_MINUTE;
+                };
+
+                const loadEPG = async () => {
+                    if(!xmltvUrl.value.trim()) return alert('URLを入力してください。');
+                    isLoading.value = true;
+                    try {
+                        const res = await fetch('/api/epg?url=' + encodeURIComponent(xmltvUrl.value));
+                        const json = await res.json();
+                        if (json.status === 'success') {
+                            allChannelsData.value = json.data;
+                            
+                            setTimeout(() => { 
+                                updateCurrentTimeLine(); 
+                                jumpToNow(); 
+                            }, 100);
+
+                            if (!timeInterval) {
+                                timeInterval = setInterval(updateCurrentTimeLine, 60000);
+                            }
+                        } else { alert('Parse XMLTV: ' + json.message); }
+                    } catch (e) { alert('Backend Error'); }
+                    isLoading.value = false;
+                };
+
+                const changeDay = (offset) => {
+                    currentDate.value = new Date(currentDate.value.getTime() + (offset * 24 * 60 * 60 * 1000));
+                    if (mainGridRef.value) mainGridRef.value.scrollTop = 0;
+                    updateCurrentTimeLine();
+                };
+
+                const jumpToHour = (hour) => {
+                    if (mainGridRef.value) mainGridRef.value.scrollTop = (hour * 60 * PIXELS_PER_MINUTE);
+                };
+
+                const jumpToNow = () => {
+                    if (allChannelsData.value.length === 0) return;
+                    if (!isToday.value) currentDate.value = new Date(new Date().setHours(0, 0, 0, 0));
+                    updateCurrentTimeLine();
+                    setTimeout(() => {
+                        if (mainGridRef.value) mainGridRef.value.scrollTop = Math.max(0, currentLineTop.value - (120 * PIXELS_PER_MINUTE));
+                    }, 50);
+                };
+
+                const onMasterScroll = (e) => {
+                    if (headerRef.value) headerRef.value.scrollLeft = e.target.scrollLeft;
+                    if (sidebarRef.value) sidebarRef.value.scrollTop = e.target.scrollTop;
+                };
+
+                const getProgramStyle = (prog) => {
+                    const start = new Date(prog.start).getTime();
+                    const stop = new Date(prog.stop).getTime();
+                    const base = currentDate.value.getTime();
+                    return {
+                        top: ((start - base) / 60000 * PIXELS_PER_MINUTE) + 'px',
+                        height: ((stop - start) / 60000 * PIXELS_PER_MINUTE) + 'px'
+                    };
+                };
+
+                const getMinute = (isoString) => new Date(isoString).getMinutes().toString().padStart(2, '0');
+                const getColorClass = (title) => 'color-' + (title.length % 4);
+
+                const openModal = (prog, ch, index) => {
+                    selectedProgram.value = prog;
+                    selectedChannel.value = { ...ch, index };
+                    isModalOpen.value = true;
+                };
+
+                const closeModal = () => { isModalOpen.value = false; };
+
+                const formatModalTime = (start, stop) => {
+                    const d1 = new Date(start);
+                    const d2 = new Date(stop);
+                    const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+                    const pad = n => n.toString().padStart(2, '0');
+                    const d1Str = `${d1.getFullYear()}/${pad(d1.getMonth()+1)}/${pad(d1.getDate())} (${dayNames[d1.getDay()]}) ${pad(d1.getHours())}:${pad(d1.getMinutes())}`;
+                    const d2Str = `${pad(d2.getHours())}:${pad(d2.getMinutes())}`;
+                    const duration = Math.round((d2.getTime() - d1.getTime()) / 60000);
+                    return `${d1Str} ~ ${d2Str} (${duration} 分)`;
+                };
+
+                onUnmounted(() => { if (timeInterval) clearInterval(timeInterval); });
+
+                return {
+                    xmltvUrl, epgLoaded, isLoading, displayChannels, loadEPG, colorTable, allChannelsData,
+                    headerRef, sidebarRef, mainGridRef, onMasterScroll, getProgramStyle, getMinute,
+                    getColorClass, totalHeight, currentLineTop, formattedDate, isToday, changeDay, jumpToHour, jumpToNow,
+                    isModalOpen, selectedProgram, selectedChannel, openModal, closeModal, formatModalTime
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
