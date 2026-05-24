@@ -2,122 +2,106 @@ const express = require('express');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const path = require('path');
-
 const app = express();
 const PORT = 8000;
-
-// Serve file tĩnh (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Hoặc nếu bạn để index.html cùng cấp với epg.js:
-// app.use(express.static(__dirname));
-
-// API EPG giữ nguyên
-function parseXmltvTime(timeStr) {
+function parseXmltvTimeToMachineLocal(timeStr) {
     try {
-        const raw = timeStr.slice(0, 14);
-        const year = raw.slice(0, 4);
-        const month = raw.slice(4, 6);
-        const day = raw.slice(6, 8);
-        const hour = raw.slice(8, 10);
-        const minute = raw.slice(10, 12);
-        const second = raw.slice(12, 14);
-        return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
-    } catch (e) {
+        const year = timeStr.slice(0, 4);
+        const month = timeStr.slice(4, 6);
+        const day = timeStr.slice(6, 8);
+        const hour = timeStr.slice(8, 10);
+        const minute = timeStr.slice(10, 12);
+        const second = timeStr.slice(12, 14);
+        const offset = timeStr.slice(15);
+        const offsetSign = offset.charAt(0);
+        const offsetHours = parseInt(offset.slice(1, 3), 10);
+        const offsetMinutes = parseInt(offset.slice(3, 5), 10);
+        let isoFormatted = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+        if (offsetSign === '+' || offsetSign === '-') {
+            isoFormatted += `${offsetSign}${String(offsetHours).padStart(2, '0')}:${String(offsetMinutes).padStart(2, '0')}`;
+        } else {
+            isoFormatted += 'Z';
+        }
+        const parsedDate = new Date(isoFormatted);
+        if (isNaN(parsedDate.getTime())) return "";
+        const pad = (num) => String(num).padStart(2, '0');
+        return `${parsedDate.getFullYear()}-${pad(parsedDate.getMonth() + 1)}-${pad(parsedDate.getDate())}T${pad(parsedDate.getHours())}:${pad(parsedDate.getMinutes())}:${pad(parsedDate.getSeconds())}`;
+    } catch {
         return "";
     }
 }
-
+function getXmltvNowString() {
+    const d = new Date();
+    const pad = (num) => String(num).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+const extractText = (elem) => {
+    if (!elem?.[0]) return "";
+    return typeof elem[0] === 'object' ? elem[0]._ || "" : elem[0];
+};
 app.get('/api/epg', async (req, res) => {
-    const url = req.query.url;
+    const { url } = req.query;
     if (!url) {
         return res.json({ status: "error", message: "Missing 'url' parameter" });
     }
-
+    console.log(`[EPG Server] URLからソースデータを読み込んでいます: ${url}`);
     try {
-        const response = await axios.get(url, { timeout: 10000 });
+        const response = await axios.get(url, {
+            timeout: 180000,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
         const parser = new xml2js.Parser({ explicitArray: true });
         const parsed = await parser.parseStringPromise(response.data);
-
         const channels = {};
         const channelList = parsed.tv.channel || [];
-        
-        // 1. XỬ LÝ KÊNH (CHANNELS)
         for (const ch of channelList) {
             const chId = ch.$.id;
-            const displayNameElem = ch['display-name'];
-            const iconElem = ch.icon;
-
-            // Fallback bóc tách tên kênh nếu dính Object đa ngôn ngữ
-            let chName = chId;
-            if (displayNameElem && displayNameElem[0]) {
-                chName = typeof displayNameElem[0] === 'object' ? displayNameElem[0]._ : displayNameElem[0];
-            }
-
-            // Fallback bóc tách logo kênh an toàn
-            let chIcon = "";
-            if (iconElem && iconElem[0] && iconElem[0].$) {
-                chIcon = iconElem[0].$.src || "";
-            }
-
             channels[chId] = {
                 id: chId,
-                name: chName,
-                icon: chIcon,
+                name: extractText(ch['display-name']) || chId,
+                icon: ch.icon?.[0]?.$?.src || "",
                 programs: []
             };
         }
-
-        // 2. XỬ LÝ CHƯƠNG TRÌNH (PROGRAMMES)
+        const xmltvNow = getXmltvNowString();
         const programmeList = parsed.tv.programme || [];
+        let prunedCount = 0;
+        let skippedNoTitleCount = 0;
         for (const prog of programmeList) {
             const chId = prog.$.channel;
             if (!channels[chId]) continue;
-
-            const titleElem = prog.title;
-            const descElem = prog.desc;
-            const iconElem = prog.icon;
-
-            // Hàm helper bóc tách text thông minh: xử lý chuỗi thường lẫn Object {"_": "text"}
-            const extractText = (elem) => {
-                if (!elem || !elem[0]) return "";
-                if (typeof elem[0] === 'object') {
-                    return elem[0]._ || ""; // Lấy thuộc tính nội dung "_"
-                }
-                return elem[0];
-            };
-
-            // Bóc tách ảnh thumbnail của chương trình
-            let progImage = "";
-            if (iconElem && iconElem[0] && iconElem[0].$) {
-                progImage = iconElem[0].$.src || "";
+            const startTime = parseXmltvTimeToMachineLocal(prog.$.start);
+            const stopTime = parseXmltvTimeToMachineLocal(prog.$.stop);
+            if (!startTime || !stopTime) continue;
+            if (stopTime.replace(/[-T:]/g, "") < xmltvNow) {
+                prunedCount++;
+                continue;
             }
-
-            const titleText = extractText(titleElem) || "Không có tiêu đề";
-            const descText = extractText(descElem);
-
+            const titleText = extractText(prog.title).trim();
+            if (!titleText) {
+                skippedNoTitleCount++;
+                continue;
+            }
             channels[chId].programs.push({
                 title: titleText,
-                desc: descText,
-                image: progImage,
-                start: parseXmltvTime(prog.$.start),
-                stop: parseXmltvTime(prog.$.stop)
+                desc: extractText(prog.desc),
+                image: prog.icon?.[0]?.$?.src || "",
+                start: startTime,
+                stop: stopTime
             });
         }
-
+        console.log(`[EPG Server] 完了しました！過去のプログラムを ${prunedCount} 個クリーンアップしました, 無題のスペースは ${skippedNoTitleCount} を削除します.`);
         res.json({ status: "success", data: Object.values(channels) });
     } catch (err) {
         console.error(err);
         res.json({ status: "error", message: err.message });
     }
 });
-
-
-// Phục vụ file index.html khi vào trang gốc
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.htm'));
 });
-
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://0.0.0.0:${PORT}`);
+    console.log(`サーバーは現在次のアドレスで稼働しています:  http://0.0.0.0:${PORT}`);
 });
