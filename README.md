@@ -21,7 +21,7 @@ XMLTV をバックエンドとして利用し、ブラウザ上でテレビ番�
 GitHub から ZIP ファイルをダウンロードして解凍するか、Git を使用してクローンします。
 
 ```bash
-git clone [<repository-url>](https://github.com/NHKRoku/Simple-Program-Viewer.git)
+git clone https://github.com/NHKRoku/Simple-Program-Viewer.git
 cd Simple-Program-Viewer
 ```
 
